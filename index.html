@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
@@ -11,7 +12,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, getDocs, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Configuração: Prioriza variáveis de ambiente, caso contrário usa a fornecida
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
@@ -26,7 +27,7 @@
                 measurementId: "G-T2TS887X99"
             };
 
-        // Regra 1: Caminhos estritos usando appId
+        // Inicialização
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -50,6 +51,7 @@
         let selectedId = null;
         let hasVoted = localStorage.getItem('evereste_voted_status') === 'true';
 
+        // Interface de Erro
         const showCriticalError = (title, message, steps = [], code = "") => {
             const container = document.getElementById('error-overlay');
             document.getElementById('error-title').innerText = title;
@@ -66,7 +68,7 @@
             container.classList.remove('hidden');
         };
 
-        // Regra 3: Auth antes de Query
+        // Autenticação
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -84,11 +86,7 @@
                     showCriticalError(
                         "Configuração Necessária",
                         "O login Anônimo não está ativo no seu Firebase.",
-                        [
-                            "Abra o console.firebase.google.com",
-                            "Vá em Authentication > Sign-in method",
-                            "Clique em 'Add new provider' e ative 'Anonymous'"
-                        ]
+                        ["Vá em Authentication > Sign-in method e ative 'Anonymous'"]
                     );
                 }
             }
@@ -102,12 +100,11 @@
             }
         });
 
+        // Monitoramento de Votos
         function startListeningResults() {
             if (!user) return;
-            // Regra 1: Caminho Público
             const votesCol = collection(db, 'artifacts', appId, 'public', 'data', 'votes');
             
-            // Regra 2: Consulta simples (sem orderBy/where complexos)
             onSnapshot(votesCol, (snapshot) => {
                 const totalVotesMap = {};
                 themes.forEach(t => totalVotesMap[t.id] = 0);
@@ -116,26 +113,15 @@
                     if (totalVotesMap[data.themeId] !== undefined) totalVotesMap[data.themeId]++;
                 });
                 renderResults(totalVotesMap, snapshot.size);
-                document.getElementById('error-overlay').classList.add('hidden'); // Esconde erro se funcionar
             }, (err) => {
-                console.error("Firestore Error:", err);
                 if (err.code === 'permission-denied') {
                     const ruleExample = `rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /artifacts/${appId}/public/data/votes/{document=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}`;
-                    showCriticalError(
-                        "Permissão Insuficiente no Firestore",
-                        "Seu banco de dados está bloqueando o acesso à votação.",
-                        [
-                            "Acesse o Console do Firebase > Firestore Database",
-                            "Vá na aba 'Rules' (Regras)",
-                            "Copie e cole o código abaixo para substituir as regras atuais",
-                            "Clique em 'Publish' (Publicar) e aguarde 1 minuto"
-                        ],
-                        ruleExample
-                    );
+                    showCriticalError("Permissão Negada", "Regras de segurança bloqueando o acesso.", ["Atualize as regras no console do Firebase"], ruleExample);
                 }
             });
         }
 
+        // Funções Globais
         window.selectTheme = (id) => {
             if (hasVoted || !user) return;
             selectedId = id;
@@ -146,6 +132,7 @@
             const activeCard = document.getElementById(`theme-${id}`);
             activeCard.classList.add('selected', 'border-emerald-500');
             activeCard.querySelector('.dot').classList.remove('hidden');
+            
             const btn = document.getElementById('vote-btn');
             btn.disabled = false;
             btn.classList.replace('bg-gray-300', 'bg-emerald-600');
@@ -166,8 +153,65 @@
                 showNotification("Voto computado com sucesso!");
                 showResultsUI();
             } catch (e) {
-                console.error("Erro ao votar:", e);
-                showNotification("Erro de permissão. Verifique as regras do Firestore.");
+                showNotification("Erro ao votar. Verifique as permissões.");
+            }
+        };
+
+        window.showResultsUI = () => {
+            document.getElementById('poll-container').classList.add('hidden');
+            document.getElementById('results-container').classList.remove('hidden');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        window.backToHome = () => {
+            document.getElementById('results-container').classList.add('hidden');
+            document.getElementById('poll-container').classList.remove('hidden');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        // Função para apagar manualmente todos os dados (Reset)
+        window.confirmDelete = () => {
+            document.getElementById('confirm-modal').classList.remove('hidden');
+            document.getElementById('confirm-modal').classList.add('flex');
+        };
+
+        window.closeModal = () => {
+            document.getElementById('confirm-modal').classList.add('hidden');
+            document.getElementById('confirm-modal').classList.remove('flex');
+        };
+
+        window.resetPoll = async () => {
+            if (!user) return;
+            
+            const btn = document.getElementById('reset-confirm-btn');
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Apagando...';
+
+            try {
+                const votesCol = collection(db, 'artifacts', appId, 'public', 'data', 'votes');
+                const snapshot = await getDocs(votesCol);
+                
+                const deletePromises = [];
+                snapshot.forEach((vDoc) => {
+                    deletePromises.push(deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'votes', vDoc.id)));
+                });
+
+                await Promise.all(deletePromises);
+                
+                // Limpa o status local para permitir votar novamente após o reset
+                localStorage.removeItem('evereste_voted_status');
+                hasVoted = false;
+                
+                showNotification("Dados apagados com sucesso!");
+                closeModal();
+                location.reload(); // Recarrega para limpar estado visual
+            } catch (e) {
+                console.error("Erro ao apagar:", e);
+                showNotification("Erro ao apagar dados.");
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
             }
         };
 
@@ -193,11 +237,6 @@
             }).join('');
         }
 
-        function showResultsUI() {
-            document.getElementById('poll-container').classList.add('hidden');
-            document.getElementById('results-container').classList.remove('hidden');
-        }
-
         function showNotification(text) {
             const el = document.getElementById('notification');
             document.getElementById('notification-text').innerText = text;
@@ -205,6 +244,7 @@
             setTimeout(() => el.classList.remove('show'), 3000);
         }
 
+        // Render inicial dos cards
         const grid = document.getElementById('themes-grid');
         grid.innerHTML = themes.map(theme => `
             <div id="theme-${theme.id}" onclick="selectTheme(${theme.id})" 
@@ -233,7 +273,26 @@
     </style>
 </head>
 <body class="pb-10">
-    <!-- Overlay de Erro Crítico -->
+    <!-- Modal de Confirmação de Apagar -->
+    <div id="confirm-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-[110] items-center justify-center p-4">
+        <div class="bg-white rounded-2xl p-8 max-w-sm w-full text-center shadow-2xl">
+            <div class="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-trash-alt text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-bold text-gray-900 mb-2">Apagar todos os votos?</h3>
+            <p class="text-gray-500 text-sm mb-6">Esta ação é irreversível e limpará todos os resultados registados no banco de dados.</p>
+            <div class="flex flex-col space-y-3">
+                <button id="reset-confirm-btn" onclick="resetPoll()" class="w-full bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 transition-colors">
+                    Sim, apagar tudo
+                </button>
+                <button onclick="closeModal()" class="w-full bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition-colors">
+                    Cancelar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overlay de Erro -->
     <div id="error-overlay" class="hidden fixed inset-0 bg-white z-[100] flex items-center justify-center p-6 text-center overflow-y-auto">
         <div class="max-w-md w-full py-10">
             <div class="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -242,57 +301,71 @@
             <h2 id="error-title" class="text-2xl font-bold text-gray-900 mb-2"></h2>
             <p id="error-desc" class="text-gray-600 mb-6"></p>
             <ul id="error-steps" class="text-left text-sm text-gray-700 bg-gray-50 p-6 rounded-lg mb-6 list-none shadow-inner"></ul>
-            
             <div id="error-code-box" class="hidden text-left mb-8">
-                <p class="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center">
-                    <i class="fas fa-code mr-2"></i> Copie e cole estas regras:
-                </p>
-                <div class="relative group">
-                    <pre id="error-code" class="bg-gray-900 text-emerald-400 p-5 rounded-xl text-[10px] font-mono overflow-x-auto leading-relaxed border border-gray-800"></pre>
-                </div>
+                <pre id="error-code" class="bg-gray-900 text-emerald-400 p-5 rounded-xl text-[10px] font-mono overflow-x-auto leading-relaxed border border-gray-800"></pre>
             </div>
-
-            <button onclick="location.reload()" class="w-full bg-gray-900 text-white px-6 py-4 rounded-xl font-bold hover:bg-black transition-all shadow-lg">
-                <i class="fas fa-sync-alt mr-2"></i> Tentar Novamente
-            </button>
+            <button onclick="location.reload()" class="w-full bg-gray-900 text-white px-6 py-4 rounded-xl font-bold">Tentar Novamente</button>
         </div>
     </div>
 
+    <!-- Header com botão Home -->
     <header class="bg-white shadow-sm p-4 sticky top-0 z-40 border-b">
         <div class="max-w-3xl mx-auto flex justify-between items-center">
             <div class="flex items-center space-x-2">
                 <i class="fas fa-mountain text-emerald-600"></i>
                 <h1 class="font-bold text-gray-800">Evereste Blog</h1>
             </div>
-            <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest bg-gray-50 px-2 py-1 rounded">Votação Editorial</span>
+            <div class="flex items-center space-x-4">
+                <button onclick="backToHome()" class="text-xs font-bold text-gray-500 hover:text-emerald-600 transition-colors uppercase tracking-widest flex items-center">
+                    <i class="fas fa-home mr-1 text-sm"></i> Início
+                </button>
+            </div>
         </div>
     </header>
 
     <main class="max-w-3xl mx-auto px-4 mt-8">
         <div class="text-center mb-10">
             <h2 class="text-3xl font-bold text-gray-900 mb-2">Qual tema merece um artigo?</h2>
-            <p class="text-gray-500 text-sm">Sua participação ajuda a priorizar nossos conteúdos de tecnologia e sustentabilidade.</p>
+            <p class="text-gray-500 text-sm">Sua participação ajuda a priorizar nossos conteúdos.</p>
         </div>
 
+        <!-- Tela da Enquete -->
         <div id="poll-container">
             <div id="themes-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
-            <div class="mt-8 flex justify-center">
+            <div class="mt-8 flex flex-col items-center space-y-4">
                 <button id="vote-btn" onclick="submitVote()" disabled 
-                        class="px-10 py-4 bg-gray-300 text-white font-bold rounded-full cursor-not-allowed transition-all shadow-lg hover:scale-105 active:scale-95">
+                        class="px-10 py-4 bg-gray-300 text-white font-bold rounded-full cursor-not-allowed transition-all shadow-lg hover:scale-105 active:scale-95 w-full sm:w-auto">
                     Confirmar meu Voto
+                </button>
+                <button onclick="showResultsUI()" class="text-sm font-semibold text-emerald-600 hover:underline">
+                    Ver resultados parciais
                 </button>
             </div>
         </div>
 
+        <!-- Tela de Resultados -->
         <div id="results-container" class="hidden bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
-            <h3 class="font-bold text-xl mb-6 text-gray-800 border-b pb-4 flex items-center">
-                <i class="fas fa-chart-pie mr-2 text-emerald-500"></i> Resultados em Tempo Real
-            </h3>
+            <div class="flex justify-between items-center border-b pb-4 mb-6">
+                <h3 class="font-bold text-xl text-gray-800 flex items-center">
+                    <i class="fas fa-chart-pie mr-2 text-emerald-500"></i> Resultados
+                </h3>
+                <button onclick="confirmDelete()" class="text-xs text-red-500 hover:text-red-700 font-bold flex items-center bg-red-50 px-3 py-1.5 rounded-full transition-colors">
+                    <i class="fas fa-trash-alt mr-1"></i> Apagar Votos
+                </button>
+            </div>
+            
             <div id="results-list"></div>
-            <p class="text-center text-xs text-gray-400 mt-6 italic">Os votos são consolidados instantaneamente por todos os leitores.</p>
+            
+            <div class="mt-10 pt-6 border-t border-gray-100 flex flex-col items-center space-y-4">
+                <button onclick="backToHome()" class="w-full sm:w-auto px-8 py-3 bg-gray-900 text-white rounded-full font-bold hover:bg-black transition-all shadow-md">
+                    Voltar para os Temas
+                </button>
+                <p class="text-center text-xs text-gray-400 italic">Os votos são consolidados instantaneamente.</p>
+            </div>
         </div>
     </main>
 
+    <!-- Notificação -->
     <div id="notification" class="fixed bottom-6 bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center space-x-3 z-50">
         <i class="fas fa-check-circle text-emerald-400"></i>
         <span id="notification-text"></span>
